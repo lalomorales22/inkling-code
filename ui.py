@@ -49,6 +49,7 @@ STOP = _c(203, (248, 113, 113))  # blocked or declined
 OK = _c(78, (74, 222, 128))      # completed
 OFF = "" if NO_COLOR else "\033[0m"
 BOLD = "" if NO_COLOR else "\033[1m"
+ITAL = "" if NO_COLOR else "\033[3m"
 
 CLEAR_LINE = "\r\033[K" if IS_TTY else ""
 HIDE_CURSOR = "\033[?25l" if ANIMATE else ""
@@ -76,22 +77,36 @@ def _plain_len(text: str) -> int:
 
 # ── boot ────────────────────────────────────────────────────────────────────
 
-def boot(model: str, mode: str, cwd: str, animate: bool = True) -> None:
-    """Draw the opening frame, tracing its outline in rather than printing it."""
+def boot(model: str, mode: str, cwd: str, animate: bool = True,
+         facts: list[str] | None = None) -> None:
+    """Draw the opening frame, tracing its outline in rather than printing it.
+
+    `facts` are extra pre-styled rows — tool/skill/MCP counts, session id —
+    rendered under a hairline divider inside the same frame.
+    """
     w = width()
     inner = w - 2
     mode_tint = {"safe": OK, "auto": WARN, "yolo": STOP}.get(mode, GLOW)
 
-    rows = [
+    rows: list[str | None] = [
         f"{GLOW}{BOLD}inkling{OFF}{MUTE}  ·  glass interface{OFF}",
         f"{MUTE}{model}{OFF}",
         f"{MUTE}mode {OFF}{mode_tint}{mode}{OFF}{MUTE}  ·  {cwd}{OFF}",
     ]
+    if facts:
+        rows.append(None)  # divider
+        rows.extend(facts)
+
+    def render(row: str | None) -> str:
+        if row is None:
+            return f"{LINE}├{DEEP}{'╌' * inner}{OFF}{LINE}┤{OFF}"
+        pad = " " * max(0, inner - 1 - _plain_len(row))
+        return f"{LINE}│{OFF} {row}{pad}{LINE}│{OFF}"
 
     if not ANIMATE or not animate:
         print(f"{LINE}╭{'─' * inner}╮{OFF}")
         for row in rows:
-            print(f"{LINE}│{OFF} {row}{' ' * max(0, inner - 1 - _plain_len(row))}{LINE}│{OFF}")
+            print(render(row))
         print(f"{LINE}╰{'─' * inner}╯{OFF}")
         print()
         return
@@ -109,8 +124,7 @@ def boot(model: str, mode: str, cwd: str, animate: bool = True) -> None:
         sys.stdout.write(f"\r{LINE}╭{'─' * inner}╮{OFF}\n")
 
         for row in rows:
-            pad = " " * max(0, inner - 1 - _plain_len(row))
-            sys.stdout.write(f"{LINE}│{OFF} {row}{pad}{LINE}│{OFF}\n")
+            sys.stdout.write(render(row) + "\n")
             sys.stdout.flush()
             time.sleep(0.045)
 
@@ -260,21 +274,38 @@ def rail_close(elapsed: float, steps: int) -> None:
 
 # ── framed panels ───────────────────────────────────────────────────────────
 
-_ANSI_SPLIT = re.compile(r"^((?:\033\[[0-9;]*m)*)(.*?)((?:\033\[0m)*)$", re.S)
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
 
 
 def _wrap_ansi(line: str, limit: int) -> list[str]:
-    """Hard-wrap a coloured line, re-applying its colour to each fragment.
+    """Hard-wrap a coloured line without ever splitting an escape sequence.
 
-    Confirm panels must never truncate: the whole point is that the user sees
-    exactly what they are approving, so a long command wraps rather than being
-    quietly cut off.
+    Panels must never truncate: the whole point is that the user sees exactly
+    what they are approving, so a long command wraps rather than being quietly
+    cut off. The colours active at the break are re-applied to the next
+    fragment, so styling survives the wrap even mid-span.
     """
-    prefix, body, suffix = _ANSI_SPLIT.match(line).groups()
-    if not body:
+    if _plain_len(line) <= limit:
         return [line]
-    return [f"{prefix}{body[i:i + limit]}{suffix or (OFF if prefix else '')}"
-            for i in range(0, len(body), limit)]
+    out: list[str] = []
+    current, active, visible = "", "", 0
+    i = 0
+    while i < len(line):
+        seq = _ANSI_RE.match(line, i)
+        if seq:
+            current += seq.group(0)
+            active = "" if seq.group(0) == "\033[0m" else active + seq.group(0)
+            i = seq.end()
+            continue
+        if visible == limit:
+            out.append(current + (OFF if active else ""))
+            current, visible = active, 0
+        current += line[i]
+        visible += 1
+        i += 1
+    if current:
+        out.append(current)
+    return out
 
 
 def panel(title: str, lines: list[str], tint: str = WARN) -> None:
@@ -314,3 +345,64 @@ def prompt_line(mode: str) -> str:
 
 def rule() -> None:
     print(f"{DEEP}{'─' * width()}{OFF}")
+
+
+# ── markdown-lite ───────────────────────────────────────────────────────────
+#
+# The model writes markdown; a terminal shows asterisks. This is the smallest
+# renderer that fixes that without pretending to be a browser: headings get
+# weight, bullets get a real glyph, inline code gets the glow tint, and fenced
+# code hangs off a gutter hairline. It is stateful and line-buffered so it can
+# sit inside the streaming path.
+
+_MD_CODE = re.compile(r"`([^`\n]+)`")
+_MD_BOLD = re.compile(r"\*\*([^*\n]+?)\*\*")
+_MD_HEAD = re.compile(r"^(#{1,4})\s+(.*)")
+_MD_BULLET = re.compile(r"^(\s*)[-*]\s+")
+
+
+class MarkdownLite:
+    def __init__(self, enabled: bool = True):
+        self.enabled = enabled and not NO_COLOR
+        self._buf = ""
+        self._fence = False
+
+    def _inline(self, text: str) -> str:
+        text = _MD_CODE.sub(f"{GLOW}\\1{OFF}", text)
+        text = _MD_BOLD.sub(f"{BOLD}\\1{OFF}", text)
+        return text
+
+    def _line(self, line: str) -> str:
+        if line.lstrip().startswith("```"):
+            self._fence = not self._fence
+            return f"{DEEP}{line}{OFF}"
+        if self._fence:
+            return f"{DEEP}│{OFF} {line}"
+        head = _MD_HEAD.match(line)
+        if head:
+            return f"{BOLD}{GLOW}{head.group(2)}{OFF}"
+        line = _MD_BULLET.sub(f"\\1{LINE}•{OFF} ", line)
+        return self._inline(line)
+
+    def feed(self, text: str) -> str:
+        """Take a stream fragment, return what is ready to print (styled)."""
+        if not self.enabled:
+            return text
+        self._buf += text
+        out = []
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            out.append(self._line(line) + "\n")
+        # A single very long line should not sit invisible until it ends.
+        if len(self._buf) > 400:
+            out.append(self._inline(self._buf) if not self._fence
+                       else f"{DEEP}│{OFF} {self._buf}")
+            self._buf = ""
+        return "".join(out)
+
+    def flush(self) -> str:
+        if not self.enabled or not self._buf:
+            remainder, self._buf = self._buf, ""
+            return remainder
+        remainder, self._buf = self._line(self._buf), ""
+        return remainder

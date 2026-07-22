@@ -1,4 +1,5 @@
 {
+  "default_mode": "yolo",
   "auto_approve_tools": [
     "read_file",
     "list_dir",

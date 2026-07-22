@@ -96,6 +96,7 @@ def writes_to_file(command: str) -> bool:
     return False
 
 DEFAULT_CONFIG = {
+    "default_mode": "auto",
     "auto_approve_tools": ["read_file", "list_dir", "search", "glob", "web_fetch", "todo_write"],
     "bash": {
         "allow": [
@@ -149,16 +150,26 @@ def load_config() -> dict:
     return cfg
 
 
+def default_mode() -> str:
+    mode = load_config().get("default_mode", "auto")
+    return mode if mode in MODES else "auto"
+
+
 class Policy:
     def __init__(self, mode: str = "safe", config: dict | None = None):
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         self.mode = mode
         cfg = config if config is not None else load_config()
-        self.auto_tools = set(cfg["auto_approve_tools"])
+        self._config_auto = set(cfg["auto_approve_tools"])
+        self.auto_tools = set(self._config_auto)
         self.allow = [re.compile(p, re.I) for p in cfg["bash"]["allow"]]
         self.deny = [re.compile(p, re.I) for p in cfg["bash"]["deny"]]
         self.session_allow: set[str] = set()
+
+    def refresh_auto(self, names: set[str]) -> None:
+        """Sync with the live tool registry — tools marked auto plus config."""
+        self.auto_tools = self._config_auto | names
 
     def denied_reason(self, command: str) -> str | None:
         for rx in self.deny:
@@ -200,6 +211,8 @@ class Policy:
                 if self._bash_segments_allowed(args.get("command", "")):
                     return ALLOW, "matches allow rule"
                 return ASK, "not on the allow list"
+            if tool.startswith("mcp__"):
+                return ASK, "external MCP tool"
             return ASK, "modifies files"
 
         return ASK, "safe mode"

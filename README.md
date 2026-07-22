@@ -1,7 +1,8 @@
 # inkling-code
 
-An agentic terminal chatbot for [`thinkingmachines/Inkling`](https://huggingface.co/thinkingmachines/Inkling)
-— tool use, a real permission system, and a glass-styled TUI.
+An agentic terminal client for [`thinkingmachines/Inkling`](https://huggingface.co/thinkingmachines/Inkling)
+— tool use, a real permission system, skills, MCP, subagents, persistent
+memory and sessions, all behind a glass-styled TUI.
 
 Inkling is a 975B-parameter MoE that will not fit on your laptop. This runs it
 remotely through Hugging Face Inference Providers and gives it tools that act on
@@ -13,6 +14,10 @@ unattended.
 │ inkling  ·  glass interface                          │
 │ Inkling:together                                     │
 │ mode auto  ·  ~/code/myproject                       │
+├╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌┤
+│ 27 tools · 8 skills · session 20260722-141200        │
+│ mcp ✓ github · 12 tools                              │
+│ / commands · @ files · ! shell · ^T mode · /help     │
 ╰──────────────────────────────────────────────────────╯
 
 › fix the failing test
@@ -28,15 +33,40 @@ unattended.
   │  Edited stats.py                                2ms
   ├▸ bash         pytest -q
   │  14 passed                                     1.7s
-  │  ━━━━━━━━━━━━━━━━━━  3/3
-  │  ✓ Reproduce the failure
-  │  ✓ Fix median for even-length input
-  │  ✓ Re-run the suite
   ╰──                               6 steps · 12.4s
 
 Fixed median in stats.py — even-length lists took the upper middle
 instead of averaging the two middles. Suite is green.
 ```
+
+## What's inside
+
+- **A completing input line** — type `/` for a live command menu with
+  descriptions, `@` to complete file paths into your prompt, `!cmd` to run
+  shell directly. History persists across sessions. `Ctrl-T` cycles the
+  permission mode, `Ctrl-J` inserts a newline, and a status toolbar shows
+  mode · model · context size · tool count · cwd.
+- **Skills** — markdown playbooks the model pulls into context on demand.
+  Eight ship builtin (`commit`, `review`, `debug`, `refactor`, `test`,
+  `research`, `explore`, `init`); drop your own in `~/.inkling/skills/` or a
+  project's `.inkling/skills/`. Run one with `/skill <name>`, or let the model
+  load one itself via its `skill` tool when a task matches.
+- **MCP client** — connect any Model Context Protocol server (stdio or HTTP)
+  and its tools appear to the model as `mcp__server__tool`, policy-gated like
+  everything else. `/mcp add github npx -y @modelcontextprotocol/server-github`
+  and it's saved to `mcp.json` and connected.
+- **Subagents** — a `task` tool that delegates self-contained work (broad
+  searches, summarizing big trees) to a fresh-context subagent that returns
+  only its findings.
+- **Web** — `web_search` (DuckDuckGo, no key needed) plus `web_fetch`.
+- **Memory** — a `remember` tool and `/remember` command append durable facts
+  to `~/.inkling/memory.md`, loaded into every future session.
+- **Sessions** — every session autosaves to `~/.inkling/sessions/`.
+  `inkling -c` continues the last one, `/resume <id>` any older one,
+  `/compact` summarizes a long conversation in place to free context,
+  `/export` writes a markdown transcript.
+- **Markdown-lite rendering** — headings, bullets, inline `code`/bold and
+  fenced code render properly in the stream, still glass-styled.
 
 ## Why remote
 
@@ -48,69 +78,96 @@ natively multimodal). On disk:
 | BF16 (original, 108 shards) | ~1.9 TB |
 | Q8_0 GGUF | ~908 GB |
 | UD-Q4_K_XL GGUF | ~587 GB |
-| UD-Q2_K_XL GGUF | ~317 GB |
 | UD-IQ1_S GGUF (smallest) | ~270 GB |
 
-The smallest quant is ~270 GB. Even where that fits on disk, MoE routing touches
-~6 random experts per layer per token across 66 layers, so nearly every token
-faults in several GB from SSD — seconds per token, at 1-bit quality. Running
-this locally on Apple Silicon realistically wants a 512 GB M3/M4 Ultra.
-
-So `inkling-code` talks to the hosted model. **Together** (512k context,
-structured output) and **DeepInfra** (128k) both serve it live, behind HF's
-OpenAI-compatible router.
+The smallest quant is ~270 GB, and MoE routing faults in several GB from SSD
+per token when it doesn't fit in RAM. So `inkling-code` talks to the hosted
+model: **Together** (512k context) and **DeepInfra** (128k) both serve it live
+behind HF's OpenAI-compatible router. Switch in-session with `/model`.
 
 ## Install
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.13+.
+One command, macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lalomorales22/inkling-code/main/install.sh | bash
+```
+
+Or from a clone:
+
+```bash
+git clone https://github.com/lalomorales22/inkling-code.git
+cd inkling-code
+./install.sh
+```
+
+The installer covers everything: installs [uv](https://docs.astral.sh/uv/) if
+missing (uv fetches its own Python 3.13, so no system Python is needed), syncs
+dependencies, asks for your Hugging Face token, and puts `inkling` and `ink`
+launchers on your PATH so both commands work from any directory. Re-running it
+updates an existing install; it never touches your shell config unless
+`~/.local/bin` isn't already on your PATH.
+
+You'll need a token with the **"Make calls to Inference Providers"**
+permission from <https://huggingface.co/settings/tokens> — the installer
+prompts for it (or reads `HF_TOKEN` from the environment).
+
+<details>
+<summary>Manual install instead</summary>
+
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/lalomorales22/inkling-code.git
 cd inkling-code
 uv sync
-```
-
-Create a token with the **"Make calls to Inference Providers"** permission at
-<https://huggingface.co/settings/tokens>, then:
-
-```bash
 cp .env.example .env   # and put your real token in it
+uv run python agent.py
 ```
 
-> A token cached in `~/.cache/huggingface/token` by `huggingface-cli login` may
-> be a short-lived OAuth token, which 401s against the router. Use a real access
-> token.
-
-Optionally add shell functions so it works from any directory:
-
-```bash
-cat >> ~/.zshrc <<'EOF'
-inkling() { uv run --project ~/path/to/inkling-code python ~/path/to/inkling-code/agent.py "$@"; }
-ink()     { uv run --project ~/path/to/inkling-code python ~/path/to/inkling-code/inkling.py "$@"; }
-EOF
-```
+</details>
 
 ## Usage
 
 ```bash
-inkling                          # safe mode: everything asks first
-inkling --auto                   # allowlisted commands run unprompted
-inkling --auto "fix the failing test"
-inkling --yolo                   # everything except hard-denied actions
+inkling                          # interactive session in this directory
+inkling "fix the failing test"   # start with a prompt
+inkling -c                       # continue the most recent session
+inkling -r 20260722-1412         # resume a specific session (prefix ok)
+inkling --safe                   # everything asks first
 ink "quick one-shot question"    # plain chat, no tools, pipe-friendly
 ```
 
-It operates on the directory you launch it from.
+### Slash commands
 
-In-session: `/help` `/mode` `/clear` `/plan` `/cwd` `/tokens` `/config` `/exit`
+| | |
+|---|---|
+| `/help` | commands, modes, tools and keys |
+| `/mode [safe\|auto\|yolo]` | show or change the permission mode |
+| `/model [together\|deepinfra\|auto]` | switch inference provider |
+| `/tools` · `/skills` | what the model can use right now |
+| `/skill <name> [args]` | run a skill playbook |
+| `/mcp [add\|remove\|tools\|reload]` | manage MCP servers |
+| `/plan` · `/compact` · `/clear` | plan, shrink or wipe the conversation |
+| `/sessions` · `/resume <id>` | list and reopen saved sessions |
+| `/export [path]` | write the conversation to markdown |
+| `/memory` · `/remember <fact>` | persistent memory |
+| `/init` | generate INKLING.md for this project |
+| `/cwd` · `/tokens` · `/config` | environment and usage |
+
+`!command` runs shell directly, no model involved. `@` completes file paths.
 
 ## Permission modes
 
 | Mode | Behaviour |
 |---|---|
-| `safe` (default) | every write and shell command asks first |
+| `safe` | every write and shell command asks first |
 | `auto` | allowlisted commands run instantly; anything else asks |
 | `yolo` | everything runs except the deny list |
+
+The startup default lives in `config.json` as `default_mode` (shipped: `yolo` —
+change it to `auto` if you want the gate back; `--safe`/`--auto`/`--yolo`
+override per run).
 
 **Deny rules apply in every mode, including `yolo`.** They cover actions that
 can't be undone or that hand control of the machine to something else:
@@ -125,43 +182,72 @@ can't be undone or that hand control of the machine to something else:
 `auto` mode is deliberately careful about three things that look safe:
 
 - **Compound commands are checked per segment.** `ls && rm -rf ~` is denied, not
-  allowed on the strength of `ls`. Splitting is quote-aware, so
-  `python -c 'import x; run()'` isn't mangled into bogus segments.
+  allowed on the strength of `ls`. Splitting is quote-aware.
 - **Shell redirection counts as a file write.** `echo 'x' > main.py` asks,
-  exactly like `write_file` — otherwise allowlisting `echo` would silently
-  bypass the write gate. Descriptor plumbing (`2>&1`) and `> /dev/null` don't.
+  exactly like `write_file`. Descriptor plumbing (`2>&1`) and `> /dev/null` don't.
 - **Inline interpreter code isn't allowlisted.** `python -c "…"` can do anything
-  Python can, so allowlisting `python` must not extend to it. Running a *script*
-  still auto-runs.
+  Python can. Running a *script* still auto-runs.
 
-The first two were found by watching the model route around earlier versions of
-the rules — without being adversarial about it.
+MCP tools are gated too: ones a server annotates read-only run automatically,
+the rest ask (or run in `yolo`). Answering `a` at any prompt allows that tool
+for the rest of the session.
 
 ## Tools
 
 | Tool | Behaviour |
 |---|---|
 | `read_file`, `list_dir`, `search` (ripgrep), `glob` | always automatic |
-| `web_fetch` | always automatic |
-| `todo_write` | always automatic; renders a live plan |
+| `web_fetch`, `web_search` | always automatic |
+| `todo_write`, `skill`, `remember`, `task` | always automatic |
 | `write_file` | governed by mode; shows the content |
 | `edit_file` | governed by mode; shows a `-`/`+` diff |
 | `bash` | governed by mode; shows the command |
+| `mcp__*` | read-only annotated: automatic; otherwise governed by mode |
 
 At each prompt: `y` once · `n` decline · `a` always allow that tool this session
 · `q` abort. Declining is a signal, not an error — the model is told and adapts.
 
-## Configuration
+## MCP
 
-Allow and deny patterns are regexes in `config.json`, written on first run.
-`/config` prints the path.
+Servers live in `mcp.json` (gitignored — it can hold env secrets; see
+`mcp.json.example`):
 
 ```json
-{ "bash": { "allow": ["^docker (ps|logs|compose)\\b", "^terraform plan\\b"] } }
+{
+  "servers": {
+    "github": {"transport": "stdio", "command": "npx",
+               "args": ["-y", "@modelcontextprotocol/server-github"],
+               "env": {"GITHUB_TOKEN": "ghp_…"}},
+    "docs":   {"transport": "http", "url": "https://example.com/mcp"}
+  }
+}
 ```
 
-If the working directory contains `INKLING.md`, `AGENTS.md`, or `CLAUDE.md`, the
-first 8 KB is appended to the system prompt as project instructions.
+Everything connects at launch (`--no-mcp` skips); `/mcp add`, `/mcp remove`,
+`/mcp reload` manage it live, `/mcp tools` lists what's connected.
+
+## Skills
+
+A skill is a markdown file with frontmatter:
+
+```markdown
+---
+name: deploy
+description: Ship this service to staging safely
+---
+1. Run the test suite first…
+```
+
+Search order (later shadows earlier): builtin `skills/` → `~/.inkling/skills/`
+→ `./.inkling/skills/`. The model sees the name+description list in its system
+prompt and pulls the full body only when needed — context is spent on demand.
+
+## Configuration
+
+Allow/deny patterns are regexes in `config.json`, written on first run.
+If the working directory contains `INKLING.md`, `AGENTS.md`, or `CLAUDE.md`,
+the first 8 KB is appended to the system prompt (`/init` writes one for you).
+Persistent memory (`~/.inkling/memory.md`) is appended too.
 
 ## Interface
 
@@ -170,18 +256,19 @@ no filled blocks, thin blue hairlines as the only strong colour.
 
 - **Latency spinner** with a live counter during the API round-trip
 - **Activity rail** — tool calls hang off one continuous hairline, tinted by
-  policy decision: blue auto-ran, amber asked, red blocked
+  policy decision: blue auto-ran, amber asked, red blocked; subagent activity
+  nests dimmer under its parent
 - **Confirm panels** wrap rather than truncate — you must see the whole command
   you're approving
 - **Paced reveal** types prose at ~1200 chars/sec but only sleeps while *ahead*
-  of schedule, degrading to raw streaming under load instead of building a backlog
+  of schedule, degrading to raw streaming under load
+- **Status toolbar** under the input line: mode · model · context · tools · cwd
 
-Flags: `--no-boot`, `--no-reveal`, `--plain`.
+Flags: `--no-boot`, `--no-reveal`, `--plain`, `--no-mcp`.
 
 Animation switches off when stdout isn't a tty, `NO_COLOR=1` and `TERM=dumb`
 emit zero escape bytes, and the 256-colour palette upgrades to 24-bit when
-`COLORTERM` advertises truecolor. Uses only box-drawing, braille and geometric
-glyphs — no Nerd Font required.
+`COLORTERM` advertises truecolor. No Nerd Font required.
 
 ## Security
 
@@ -189,24 +276,33 @@ glyphs — no Nerd Font required.
 engine is a pattern matcher, not a proof — it will not catch a genuinely novel
 phrasing of something destructive.
 
-- `auto` is a good default inside a git repo, where `git diff` is your undo.
-- `yolo` still blocks the deny list, but everything else runs unseen. Use it in
-  scratch directories, not `$HOME`.
-- `web_fetch` + `bash` deserves thought: a fetched page is untrusted text, and an
-  agent that can run commands is a useful target for injected instructions.
-  Fetched content is tagged as data in context and the system prompt says to
-  report embedded directives rather than follow them — but in `yolo` that
-  instruction is the only thing between a malicious page and your shell.
+- The shipped default mode is `yolo` for full autonomy. Inside a git repo,
+  `git diff` is your undo — outside one, consider `default_mode: "auto"`.
+- `web_fetch`/`web_search` content and MCP tool results are untrusted text.
+  They are tagged as data in context and the system prompt says to report
+  embedded directives rather than follow them — but in `yolo`, that instruction
+  is the main thing between a malicious page and your shell. So is the deny
+  list. Think before pointing it at hostile input.
+- MCP servers you add run with your permissions and their tools do whatever
+  they do — add servers you trust.
 
 ## Layout
 
 ```
-agent.py        agent loop, streaming, approval flow, slash commands
-tools.py        tool schemas and executors
+agent.py        app state, agent loop, streaming, approval flow, slash commands
+tools.py        tool registry and executors (fs, shell, web, memory, skills)
 permissions.py  policy engine — modes, allow/deny matching, shell parsing
-ui.py           glass interface — boot, spinner, rail, panels, reveal
+mcp_client.py   MCP servers: config, connections, tool bridging
+skills.py       skill discovery (builtin · user · project)
+sessions.py     autosave, resume, listing
+repl.py         input line: completions, keybindings, toolbar
+commands.py     slash-command catalog (menu + help render from it)
+ui.py           glass interface — boot, spinner, rail, panels, markdown-lite
 inkling.py      plain no-tools client, for one-shots and piping
-config.json     editable allow/deny rules
+config.json     editable mode default + allow/deny rules
+mcp.json        your MCP servers (gitignored; see mcp.json.example)
+skills/         builtin skill playbooks
+install.sh      macOS/Linux installer — uv, deps, token, PATH launchers
 ```
 
 ## License
